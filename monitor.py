@@ -1,22 +1,77 @@
 import urllib.request
 import json
 import os
+from supabase import create_client, Client
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import date
 
-GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "price.autospot@gmail.com")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "hrabxguhfvsfzubd")
-ALERT_EMAIL = os.environ.get("ALERT_EMAIL", "colin.block2000@yahoo.com")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+supabase: Client | None = None
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
+ALERT_EMAIL = os.environ.get("ALERT_EMAIL")
 
 COMPETITOR_STORES = [
     "https://kaged.com",
     "https://gymreapers.com",
 ]
 
-DATA_FOLDER = os.path.expanduser("~/shopify-competitor-alerts/data")
 
+def load_previous_snapshot(store_key):
+    if not supabase:
+        return {}
+
+    response = (
+        supabase.table("product_snapshots")
+        .select("*")
+        .eq("store_key", store_key)
+        .execute()
+    )
+
+    previous = {}
+    for row in response.data:
+        product_name = row.get("product_name")
+        price = row.get("price")
+        if product_name is not None and price is not None:
+            previous[product_name] = float(price)
+    return previous
+
+
+def save_current_snapshot(store_key, price_map):
+    if not supabase:
+        return
+
+    (
+        supabase.table("product_snapshots")
+        .delete()
+        .eq("store_key", store_key)
+        .execute()
+    )
+
+    rows = []
+    for product_name, price in price_map.items():
+        rows.append({
+            "store_key": store_key,
+            "product_handle": product_name.lower().replace(" ", "-"),
+            "product_name": product_name,
+            "variant_name": "",
+            "price": price,
+            "compare_at_price": None,
+            "product_url": ""
+        })
+
+    if rows:
+        supabase.table("product_snapshots").insert(rows).execute()
+
+    print(f"Saved {len(price_map)} products for {store_key} in Supabase")
+    
 def fetch_products(store_url):
     url = f"{store_url}/products.json?limit=250"
     try:
@@ -42,19 +97,9 @@ def extract_prices(products):
             price_map[title] = min(prices)
     return price_map
 
-def save_snapshot(store_name, price_map):
-    os.makedirs(DATA_FOLDER, exist_ok=True)
-    filename = os.path.join(DATA_FOLDER, f"{store_name}_{date.today()}.json")
-    with open(filename, "w") as f:
-        json.dump(price_map, f, indent=2)
-    print(f"Saved {len(price_map)} products for {store_name}")
 
-def load_last_snapshot(store_name):
-    files = sorted([f for f in os.listdir(DATA_FOLDER) if f.startswith(store_name) and f.endswith(".json")])
-    if not files:
-        return {}
-    with open(os.path.join(DATA_FOLDER, files[-1])) as f:
-        return json.load(f)
+
+
 
 def detect_changes(old_prices, new_prices):
     changes = []
@@ -88,7 +133,7 @@ def send_email_alert(store_url, changes):
         print(f"  Email failed: {e}")
 
 def run():
-    os.makedirs(DATA_FOLDER, exist_ok=True)
+    
     for store_url in COMPETITOR_STORES:
         store_name = store_url.replace("https://", "").replace("http://", "").replace("/", "_").replace(".", "_")
         print(f"Checking {store_url}...")
@@ -96,7 +141,7 @@ def run():
         if not products:
             continue
         new_prices = extract_prices(products)
-        old_prices = load_last_snapshot(store_name)
+        old_prices = load_previous_snapshot(store_name)
         changes = detect_changes(old_prices, new_prices)
         if changes:
             print(f"  {len(changes)} change(s) detected:")
@@ -105,7 +150,7 @@ def run():
             send_email_alert(store_url, changes)
         else:
             print(f"  No changes. {len(new_prices)} products monitored.")
-        save_snapshot(store_name, new_prices)
+        save_current_snapshot(store_name, new_prices)
 
 if __name__ == "__main__":
     run()
