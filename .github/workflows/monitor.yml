@@ -27,7 +27,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          EMAIL_FROM: ${{ secrets.GMAIL_ADDRESS }}
+          EMAIL_TO: ${{ secrets.ALERT_EMAIL }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
         run: python monitor.py
