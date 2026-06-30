@@ -17,6 +17,7 @@ EMAIL_TO = os.environ.get("EMAIL_TO", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 
 SUPABASE_TABLE = "product_snapshots"
+HISTORY_TABLE = "product_snapshot_history"
 
 STORES = [
     {
@@ -374,6 +375,36 @@ def save_current_snapshot(store_key: str, rows: List[dict]) -> None:
     print(f"[VERIFY] store={store_key} rows_now={rows_now}")
 
 
+def save_snapshot_history(store_key: str, rows: List[dict]) -> None:
+    payload = []
+    for row in rows:
+        payload.append(
+            {
+                "store_key": row["store_key"],
+                "product_handle": row["product_handle"],
+                "product_name": row["product_name"],
+                "variant_name": row["variant_name"],
+                "price": float(row["price"]) if row["price"] is not None else None,
+                "compare_at_price": float(row["compare_at_price"]) if row["compare_at_price"] is not None else None,
+                "product_url": row["product_url"],
+            }
+        )
+
+    if not payload:
+        print(f"[HISTORY] store={store_key} rows_inserted=0")
+        return
+
+    inserted = 0
+    batch_size = 500
+
+    for i in range(0, len(payload), batch_size):
+        batch = payload[i:i + batch_size]
+        response = supabase.table(HISTORY_TABLE).insert(batch).execute()
+        inserted += len(response.data or [])
+
+    print(f"[HISTORY] store={store_key} rows_inserted={inserted}")
+
+
 def run_store(store: dict) -> None:
     current_rows = fetch_live_products(store)
     previous_rows = load_previous_snapshot(store["store_key"])
@@ -393,6 +424,7 @@ def run_store(store: dict) -> None:
         print(f"[EMAIL] store={store['store_key']} no changes, no email sent")
 
     save_current_snapshot(store["store_key"], current_rows)
+    save_snapshot_history(store["store_key"], current_rows)
 
 
 def run() -> None:
