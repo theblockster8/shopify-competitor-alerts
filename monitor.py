@@ -128,30 +128,44 @@ def fetch_live_products(store: dict) -> List[dict]:
 
 
 def load_previous_snapshot(store_key: str) -> List[dict]:
-    response = (
-        supabase.table(SUPABASE_TABLE)
-        .select("store_key, product_handle, product_name, variant_name, price, compare_at_price, product_url")
-        .eq("store_key", store_key)
-        .execute()
-    )
+    all_rows = []
+    page_size = 1000
+    start = 0
 
-    rows = response.data or []
-    normalized = []
-    for row in rows:
-        normalized.append(
-            {
-                "store_key": row.get("store_key"),
-                "product_handle": row.get("product_handle"),
-                "product_name": row.get("product_name"),
-                "variant_name": row.get("variant_name") or "",
-                "price": to_decimal(row.get("price")),
-                "compare_at_price": to_decimal(row.get("compare_at_price")),
-                "product_url": row.get("product_url"),
-            }
+    while True:
+        response = (
+            supabase.table(SUPABASE_TABLE)
+            .select("store_key, product_handle, product_name, variant_name, price, compare_at_price, product_url")
+            .eq("store_key", store_key)
+            .order("id")
+            .range(start, start + page_size - 1)
+            .execute()
         )
 
-    print(f"[LOAD] store={store_key} rows_previous={len(normalized)}")
-    return normalized
+        batch = response.data or []
+        if not batch:
+            break
+
+        for row in batch:
+            all_rows.append(
+                {
+                    "store_key": row.get("store_key"),
+                    "product_handle": row.get("product_handle"),
+                    "product_name": row.get("product_name"),
+                    "variant_name": row.get("variant_name") or "",
+                    "price": to_decimal(row.get("price")),
+                    "compare_at_price": to_decimal(row.get("compare_at_price")),
+                    "product_url": row.get("product_url"),
+                }
+            )
+
+        if len(batch) < page_size:
+            break
+
+        start += page_size
+
+    print(f"[LOAD] store={store_key} rows_previous={len(all_rows)}")
+    return all_rows
 
 
 def index_snapshot(rows: List[dict]) -> Dict[str, dict]:
