@@ -1,7 +1,7 @@
 import urllib.request
 import json
 import os
-from supabase import create_client, Client
+from supabase import create_client
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -12,6 +12,9 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY")
+
+print("Supabase URL:", SUPABASE_URL)
+print("Supabase key present:", bool(SUPABASE_KEY))
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 print("Supabase client initialized")
@@ -25,17 +28,14 @@ COMPETITOR_STORES = [
     "https://gymreapers.com",
 ]
 
-
 def load_previous_snapshot(store_key):
-    if not supabase:
-        return {}
-
     response = (
         supabase.table("product_snapshots")
         .select("*")
         .eq("store_key", store_key)
         .execute()
     )
+    print(f"[READ] store={store_key} rows_found={len(response.data)}")
 
     previous = {}
     for row in response.data:
@@ -44,7 +44,6 @@ def load_previous_snapshot(store_key):
         if product_name is not None and price is not None:
             previous[product_name] = float(price)
     return previous
-
 
 def save_current_snapshot(store_key, price_map):
     rows = []
@@ -59,28 +58,33 @@ def save_current_snapshot(store_key, price_map):
             "product_url": ""
         })
 
-    try:
-        delete_response = (
+    print(f"[WRITE] store={store_key} rows_prepared={len(rows)}")
+
+    delete_response = (
+        supabase.table("product_snapshots")
+        .delete()
+        .eq("store_key", store_key)
+        .execute()
+    )
+    print(f"[DELETE] store={store_key} response={delete_response}")
+
+    if rows:
+        insert_response = (
             supabase.table("product_snapshots")
-            .delete()
-            .eq("store_key", store_key)
+            .insert(rows)
+            .select("id, store_key, product_name, price")
             .execute()
         )
-        print(f"Delete response for {store_key}: {delete_response}")
+        print(f"[INSERT] store={store_key} inserted_rows={len(insert_response.data)} response={insert_response}")
 
-        if rows:
-            insert_response = (
-                supabase.table("product_snapshots")
-                .insert(rows)
-                .execute()
-            )
-            print(f"Insert response for {store_key}: {insert_response}")
+    verify_response = (
+        supabase.table("product_snapshots")
+        .select("id, store_key, product_name, price")
+        .eq("store_key", store_key)
+        .execute()
+    )
+    print(f"[VERIFY] store={store_key} rows_now={len(verify_response.data)}")
 
-        print(f"Saved {len(price_map)} products for {store_key} in Supabase")
-
-    except Exception as e:
-        print(f"Supabase write failed for {store_key}: {e}")
-    
 def fetch_products(store_url):
     url = f"{store_url}/products.json?limit=250"
     try:
@@ -100,15 +104,11 @@ def extract_prices(products):
         for variant in product.get("variants", []):
             try:
                 prices.append(float(variant.get("price", "0")))
-            except:
+            except Exception:
                 pass
         if prices:
             price_map[title] = min(prices)
     return price_map
-
-
-
-
 
 def detect_changes(old_prices, new_prices):
     changes = []
@@ -137,28 +137,28 @@ def send_email_alert(store_url, changes):
             server.starttls()
             server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             server.sendmail(GMAIL_ADDRESS, ALERT_EMAIL, msg.as_string())
-            print(f"  Email alert sent to {ALERT_EMAIL}")
+            print(f"Email alert sent to {ALERT_EMAIL}")
     except Exception as e:
-        print(f"  Email failed: {e}")
+        print(f"Email failed: {e}")
 
 def run():
-    
     for store_url in COMPETITOR_STORES:
         store_name = store_url.replace("https://", "").replace("http://", "").replace("/", "_").replace(".", "_")
         print(f"Checking {store_url}...")
         products = fetch_products(store_url)
         if not products:
             continue
+
         new_prices = extract_prices(products)
         old_prices = load_previous_snapshot(store_name)
         changes = detect_changes(old_prices, new_prices)
+
         if changes:
-            print(f"  {len(changes)} change(s) detected:")
-            for c in changes:
-                print(f"    * {c}")
+            print(f"{len(changes)} change(s) detected for {store_name}")
             send_email_alert(store_url, changes)
         else:
-            print(f"  No changes. {len(new_prices)} products monitored.")
+            print(f"No changes for {store_name}. {len(new_prices)} products monitored.")
+
         save_current_snapshot(store_name, new_prices)
 
 if __name__ == "__main__":
