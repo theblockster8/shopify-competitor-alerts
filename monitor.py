@@ -47,14 +47,6 @@ def load_previous_snapshot(store_key):
 
 
 def save_current_snapshot(store_key, price_map):
-    delete_response = (
-        supabase.table("product_snapshots")
-        .delete()
-        .eq("store_key", store_key)
-        .execute()
-    )
-    print(f"[Supabase] Delete {store_key}: data={delete_response.data}, error={delete_response.error}")
-
     rows = []
     for product_name, price in price_map.items():
         rows.append({
@@ -64,13 +56,30 @@ def save_current_snapshot(store_key, price_map):
             "variant_name": "",
             "price": price,
             "compare_at_price": None,
-            "product_url": "",
+            "product_url": ""
         })
 
-    print(f"[Supabase] Prepared {len(rows)} rows for {store_key}")
+    try:
+        delete_response = (
+            supabase.table("product_snapshots")
+            .delete()
+            .eq("store_key", store_key)
+            .execute()
+        )
+        print(f"Delete response for {store_key}: {delete_response}")
 
-    insert_response = supabase.table("product_snapshots").insert(rows).execute()
-    print(f"[Supabase] Insert {store_key}: data={insert_response.data}, error={insert_response.error}")
+        if rows:
+            insert_response = (
+                supabase.table("product_snapshots")
+                .insert(rows)
+                .execute()
+            )
+            print(f"Insert response for {store_key}: {insert_response}")
+
+        print(f"Saved {len(price_map)} products for {store_key} in Supabase")
+
+    except Exception as e:
+        print(f"Supabase write failed for {store_key}: {e}")
     
 def fetch_products(store_url):
     url = f"{store_url}/products.json?limit=250"
