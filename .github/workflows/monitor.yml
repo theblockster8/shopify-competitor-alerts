@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 13 * * *'
   workflow_dispatch:
+    inputs:
+      user_id:
+        description: 'Supabase user UUID to run scrape for (leave blank for demo mode)'
+        required: false
+        default: ''
 
 jobs:
   monitor:
@@ -30,4 +35,5 @@ jobs:
           EMAIL_FROM: ${{ secrets.GMAIL_ADDRESS }}
           EMAIL_TO: ${{ secrets.ALERT_EMAIL }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          USER_ID: ${{ github.event.inputs.user_id }}
         run: python monitor.py

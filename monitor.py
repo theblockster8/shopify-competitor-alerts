@@ -16,21 +16,27 @@ EMAIL_FROM = os.environ.get("EMAIL_FROM", "")
 EMAIL_TO = os.environ.get("EMAIL_TO", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 
+# If USER_ID is set, run for that specific user. Otherwise run demo mode.
+USER_ID = os.environ.get("USER_ID", "")
+
 SUPABASE_TABLE = "product_snapshots"
 HISTORY_TABLE = "product_snapshot_history"
 
-STORES = [
+# Hardcoded demo stores — only used when USER_ID is not set
+DEMO_STORES = [
     {
         "name": "Kaged",
-        "store_key": "kaged_com",
+        "store_key": "demo__kaged_com",
         "base_url": "https://kaged.com",
         "products_json": "https://kaged.com/products.json?limit=250",
+        "user_id": None,
     },
     {
         "name": "Gymreapers",
-        "store_key": "gymreapers_com",
+        "store_key": "demo__gymreapers_com",
         "base_url": "https://gymreapers.com",
         "products_json": "https://gymreapers.com/products.json?limit=250",
+        "user_id": None,
     },
 ]
 
@@ -56,6 +62,36 @@ def product_identity(row: dict) -> str:
     handle = (row.get("product_handle") or "").strip()
     variant = (row.get("variant_name") or "").strip()
     return f"{handle}::{variant}"
+
+
+def load_stores_for_user(user_id: str) -> List[dict]:
+    """Load rival stores from Supabase rivals table for a given user."""
+    response = (
+        supabase.table("rivals")
+        .select("id, store_url, store_name, user_id")
+        .eq("user_id", user_id)
+        .eq("active", True)
+        .execute()
+    )
+    rows = response.data or []
+    stores = []
+    for row in rows:
+        raw_url = (row.get("store_url") or "").rstrip("/")
+        if not raw_url:
+            continue
+        if not raw_url.startswith("http"):
+            raw_url = "https://" + raw_url
+        store_key_raw = raw_url.replace("https://", "").replace("http://", "").replace(".", "_").replace("/", "_")
+        store_key = f"{user_id[:8]}__{store_key_raw}"
+        stores.append({
+            "name": row.get("store_name") or store_key_raw,
+            "store_key": store_key,
+            "base_url": raw_url,
+            "products_json": f"{raw_url}/products.json?limit=250",
+            "user_id": user_id,
+        })
+    print(f"[STORES] user_id={user_id} stores_found={len(stores)}")
+    return stores
 
 
 def fetch_live_products(store: dict) -> List[dict]:
@@ -246,7 +282,7 @@ def html_list(items: List[str]) -> str:
 
 def build_email(store: dict, diff: dict) -> Tuple[str, str]:
     subject = (
-        f"[Price Monitor] {store['name']} changes detected "
+        f"[RivalRadar] {store['name']} changes detected "
         f"(new: {len(diff['new_products'])}, "
         f"price: {len(diff['price_changes'])}, "
         f"compare-at: {len(diff['compare_at_changes'])}, "
@@ -283,11 +319,20 @@ def build_email(store: dict, diff: dict) -> Tuple[str, str]:
             f'{label} — last seen price {money_str(item["price"])}'
         )
 
+    # Look up user email for sending alert
+    email_to = EMAIL_TO
+    if store.get("user_id"):
+        try:
+            profile = supabase.table("profiles").select("email").eq("id", store["user_id"]).single().execute()
+            if profile.data and profile.data.get("email"):
+                email_to = profile.data["email"]
+        except Exception:
+            pass
+
     html = f"""
     <html>
-      <body>
-        <h2>{store['name']} changes detected</h2>
-        <p><strong>Store key:</strong> {store['store_key']}</p>
+      <body style="font-family: sans-serif; color: #111;">
+        <h2>🔔 {store['name']} — changes detected</h2>
         <p><strong>Previous rows:</strong> {diff['old_count']}<br>
            <strong>Current rows:</strong> {diff['new_count']}</p>
 
@@ -302,33 +347,40 @@ def build_email(store: dict, diff: dict) -> Tuple[str, str]:
 
         <h3>Disappeared products ({len(diff['disappeared_products'])})</h3>
         {html_list(disappeared_items)}
+
+        <hr>
+        <p style="color:#888;font-size:12px;">Sent by RivalRadar · rival-radar.online</p>
       </body>
     </html>
     """
 
-    return subject, html
+    return subject, html, email_to
 
 
 def send_email_alert(store: dict, diff: dict) -> None:
-    if not EMAIL_FROM or not EMAIL_TO or not GMAIL_APP_PASSWORD:
-        print("[EMAIL] Skipped because EMAIL_FROM, EMAIL_TO, or GMAIL_APP_PASSWORD is missing")
+    if not EMAIL_FROM or not GMAIL_APP_PASSWORD:
+        print("[EMAIL] Skipped — EMAIL_FROM or GMAIL_APP_PASSWORD missing")
         return
 
-    subject, html_body = build_email(store, diff)
+    subject, html_body, email_to = build_email(store, diff)
+
+    if not email_to:
+        print("[EMAIL] Skipped — no recipient email found")
+        return
 
     message = MIMEMultipart("alternative")
     message["Subject"] = subject
     message["From"] = EMAIL_FROM
-    message["To"] = EMAIL_TO
+    message["To"] = email_to
     message.attach(MIMEText(html_body, "html"))
 
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.ehlo()
         server.starttls()
         server.login(EMAIL_FROM, GMAIL_APP_PASSWORD)
-        server.sendmail(EMAIL_FROM, [EMAIL_TO], message.as_string())
+        server.sendmail(EMAIL_FROM, [email_to], message.as_string())
 
-    print(f"[EMAIL] store={store['store_key']} sent_to={EMAIL_TO}")
+    print(f"[EMAIL] store={store['store_key']} sent_to={email_to}")
 
 
 def save_current_snapshot(store_key: str, rows: List[dict]) -> None:
@@ -365,15 +417,6 @@ def save_current_snapshot(store_key: str, rows: List[dict]) -> None:
 
     print(f"[INSERT] store={store_key} inserted_rows={inserted_rows}")
 
-    verify_response = (
-        supabase.table(SUPABASE_TABLE)
-        .select("id", count="exact")
-        .eq("store_key", store_key)
-        .execute()
-    )
-    rows_now = verify_response.count if verify_response.count is not None else len(verify_response.data or [])
-    print(f"[VERIFY] store={store_key} rows_now={rows_now}")
-
 
 def save_snapshot_history(store_key: str, rows: List[dict]) -> None:
     payload = []
@@ -396,7 +439,6 @@ def save_snapshot_history(store_key: str, rows: List[dict]) -> None:
 
     inserted = 0
     batch_size = 500
-
     for i in range(0, len(payload), batch_size):
         batch = payload[i:i + batch_size]
         response = supabase.table(HISTORY_TABLE).insert(batch).execute()
@@ -430,9 +472,18 @@ def run_store(store: dict) -> None:
 def run() -> None:
     print(f"Supabase URL: {SUPABASE_URL}")
     print(f"Supabase key present: {bool(SUPABASE_KEY)}")
-    print("Supabase client initialized")
+    print(f"USER_ID: {USER_ID or '(demo mode)'}")
 
-    for store in STORES:
+    if USER_ID:
+        stores = load_stores_for_user(USER_ID)
+        if not stores:
+            print(f"[WARN] No active rivals found for user_id={USER_ID}. Nothing to do.")
+            return
+    else:
+        print("[DEMO] No USER_ID set — running demo stores")
+        stores = DEMO_STORES
+
+    for store in stores:
         try:
             run_store(store)
         except Exception as exc:
